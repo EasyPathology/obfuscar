@@ -806,21 +806,29 @@ public class Obfuscator
                 }
                 case PIMappingRecord piMappingRecord:
                 {
-                    if (Mapping.ClassMap.FirstOrDefault(p => p.Key.Namespace.Equals(piMappingRecord.ClrNamespace)).Value is
-                        { Status: ObfuscationStatus.Renamed } obfuscatedClass)
+                    if (Mapping.ClassMap.FirstOrDefault(
+                            p => p.Key.Namespace.Equals(piMappingRecord.ClrNamespace) &&
+                                p.Value.Status == ObfuscationStatus.Renamed).Value is
+                        { } obfuscatedClass)
                     {
                         piMappingRecord.ClrNamespace = obfuscatedClass.ObfuscatedNamespace;
-                        piMappingRecord.XmlNamespace = "clr-namespace:" + obfuscatedClass.ObfuscatedNamespace;
+
+                        var xmlNamespaceParts = piMappingRecord.XmlNamespace["clr-namespace:".Length..].Split(';');  // ;assembly=xxx
+                        piMappingRecord.XmlNamespace = "clr-namespace:" + obfuscatedClass.ObfuscatedNamespace +
+                            (xmlNamespaceParts.Length == 2 ? ";" + xmlNamespaceParts[1] : string.Empty);
                     }
                     break;
                 }
                 case XmlnsPropertyRecord xmlnsPropertyRecord when xmlnsPropertyRecord.XmlNamespace.StartsWith("clr-namespace:"):
                 {
-                    var clrNamespace = xmlnsPropertyRecord.XmlNamespace["clr-namespace:".Length..];
-                    if (Mapping.ClassMap.FirstOrDefault(p => p.Key.Namespace.Equals(clrNamespace)).Value is
-                        { Status: ObfuscationStatus.Renamed } obfuscatedClass)
+                    var xmlNamespaceParts = xmlnsPropertyRecord.XmlNamespace["clr-namespace:".Length..].Split(';');  // ;assembly=xxx
+                    if (Mapping.ClassMap.FirstOrDefault(
+                            p => p.Key.Namespace.Equals(xmlNamespaceParts[0]) &&
+                                p.Value.Status == ObfuscationStatus.Renamed).Value is
+                        { } obfuscatedClass)
                     {
-                        xmlnsPropertyRecord.XmlNamespace = "clr-namespace:" + obfuscatedClass.ObfuscatedNamespace;
+                        xmlnsPropertyRecord.XmlNamespace = "clr-namespace:" + obfuscatedClass.ObfuscatedNamespace +
+                            (xmlNamespaceParts.Length == 2 ? ";" + xmlNamespaceParts[1] : string.Empty);
                     }
                     break;
                 }
@@ -894,13 +902,14 @@ public class Obfuscator
                 {
                     if (bamlBlockNode.Properties.TryGetValue("TargetType", out var targetTypeNode))
                     {
-                        bindingCtx.PushTemplateParent(targetTypeNode.Record switch
-                        {
-                            TypeInfoRecord typeInfoRecord => GetObfuscatedClass(typeInfoRecord, ctx),
-                            PropertyTypeReferenceRecord propertyTypeReferenceRecord =>
-                                GetObfuscatedClass(ctx.ResolveType(propertyTypeReferenceRecord.TypeId)),
-                            _ => throw new NotSupportedException()
-                        });
+                        bindingCtx.PushTemplateParent(
+                            targetTypeNode.Record switch
+                            {
+                                TypeInfoRecord typeInfoRecord => GetObfuscatedClass(typeInfoRecord, ctx),
+                                PropertyTypeReferenceRecord propertyTypeReferenceRecord =>
+                                    GetObfuscatedClass(ctx.ResolveType(propertyTypeReferenceRecord.TypeId)),
+                                _ => throw new NotSupportedException()
+                            });
                     }
                     else
                     {
