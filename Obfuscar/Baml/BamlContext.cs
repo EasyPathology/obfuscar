@@ -33,6 +33,7 @@ internal class BamlContext
     public KnownThings KnownThings { get; }
 
     private readonly List<AssemblyInfo> assemblyList;
+    private readonly ObfuscationMap obfuscationMap;
 
     private readonly Dictionary<ushort, AssemblyDefinition> assemblyMap = new();
     private readonly Dictionary<ushort, TypeReference> typeMap = new();
@@ -43,15 +44,16 @@ internal class BamlContext
     private readonly Dictionary<ushort, StringInfoRecord> stringIdMap = new();
     private readonly Dictionary<ushort, TypeInfoRecord> typeIdMap = new();
 
-    private BamlContext(Project project)
+    private BamlContext(Project project, ObfuscationMap obfuscationMap)
     {
         assemblyList = project.AssemblyList;
+        this.obfuscationMap = obfuscationMap;
         KnownThings = new KnownThings(project.AllAssemblySearchPaths);
     }
 
-    public static BamlContext ConstructContext(Project project, BamlDocument document)
+    public static BamlContext ConstructContext(Project project, ObfuscationMap obfuscationMap, BamlDocument document)
     {
-        var ctx = new BamlContext(project);
+        var ctx = new BamlContext(project, obfuscationMap);
 
         foreach (var record in document)
         {
@@ -130,21 +132,37 @@ internal class BamlContext
         if (id > 0x7fff)
         {
             var knownProp = KnownThings.Members((KnownMembers)unchecked((short)-(short)id));
-            // type = ResolveType(unchecked((ushort)(short)-(short)knownProp.Parent));
-            // name = knownProp.Name;
-            property = knownProp.Property;
+            property = knownProp.Property ?? new PropertyDefinition(
+                knownProp.Name,
+                PropertyAttributes.None,
+                ResolveType(unchecked((ushort)(short)-(short)knownProp.Parent)));
         }
         else
         {
             var attrRec = attributeIdMap[id];
             var type = ResolveType(attrRec.OwnerTypeId).Resolve();
-            property = type.Properties.FirstOrDefault(p => p.Name == attrRec.Name);
-            if (property == null &&
-                type.Fields.FirstOrDefault(f => f.Name == $"{attrRec.Name}Property") != null &&
-                type.Methods.FirstOrDefault(m => m.Name == $"Get{attrRec.Name}") is { } getter &&
-                type.Methods.FirstOrDefault(m => m.Name == $"Set{attrRec.Name}") is { } setter)
+            property = type.GetAllProperties().FirstOrDefault(p => p.Name == attrRec.Name);
+            if (property == null)
             {
-                property = new PropertyDefinition(attrRec.Name, PropertyAttributes.SpecialName, getter.ReturnType);
+                if (type.Methods.FirstOrDefault(m => m.Name == $"Get{attrRec.Name}") is { } getter)
+                {
+                    // Attached property
+                    property = new PropertyDefinition(attrRec.Name, PropertyAttributes.SpecialName, getter.ReturnType);
+                }
+                else if (type.Methods.FirstOrDefault(m => m.Name == $"Set{attrRec.Name}") is { } setter)
+                {
+                    // Attached property
+                    property = new PropertyDefinition(attrRec.Name, PropertyAttributes.SpecialName, setter.Parameters[0].ParameterType);
+                }
+                else if (obfuscationMap.ClassMap.Values.FirstOrDefault(c => c.ObfuscatedFullName == type.FullName) is { } obfuscatedClass)
+                {
+                    // The property is obfuscated?
+                    var obfuscatedProperty = obfuscatedClass.Properties.FirstOrDefault(p => p.Key.Name == attrRec.Name).Value;
+                    if (obfuscatedProperty != null)
+                        property = type.Properties.FirstOrDefault(p => p.Name == obfuscatedProperty.ObfuscatedFullName);
+                }
+
+                if (property == null) throw new KeyNotFoundException($"Could not resolve property '{attrRec.Name}' on type '{type.FullName}'!");
             }
         }
 

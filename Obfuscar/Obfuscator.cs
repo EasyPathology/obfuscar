@@ -134,10 +134,7 @@ public class Obfuscator
         // The SemanticAttributes of MethodDefinitions have to be loaded before any fields,properties or events are removed
         LoadMethodSemantics();
 
-        LogOutput("Hiding strings...\n");
-        HideStrings();
-
-        LogOutput("Renaming:  fields...");
+        LogOutput("\nRenaming:  fields...");
         RenameFields();
 
         LogOutput("Parameters...");
@@ -155,9 +152,12 @@ public class Obfuscator
         LogOutput("Types...");
         RenameTypes();
 
+        LogOutput("\nHiding strings...");
+        HideStrings();
+
         PostProcessing();
 
-        LogOutput("Done.\n");
+        LogOutput("\nDone.\n");
 
         LogOutput("Saving assemblies...");
         SaveAssemblies();
@@ -772,7 +772,7 @@ public class Obfuscator
     private MemoryStream RenameBamlDocument(Stream bamlStream)
     {
         var document = BamlReader.ReadDocument(bamlStream, CancellationToken.None);
-        var ctx = BamlContext.ConstructContext(Project, document);
+        var ctx = BamlContext.ConstructContext(Project, Mapping, document);
         foreach (var record in document)
         {
             switch (record)
@@ -788,7 +788,7 @@ public class Obfuscator
                     //     return;
                     // }
 
-                    if (GetObfuscatedClass(ownerType) is { } obfuscatedClass &&
+                    if (Mapping.GetObfuscatedClass(ownerType) is { } obfuscatedClass &&
                         obfuscatedClass.GetObfuscatedProperty(attributeInfoRecord.Name) is { } obfuscatedProperty)
                     {
                         attributeInfoRecord.Name = obfuscatedProperty.ObfuscatedFullName;
@@ -798,7 +798,7 @@ public class Obfuscator
                 case TypeInfoRecord typeInfoRecord:
                 {
                     var assembly = ctx.ResolveAssembly(typeInfoRecord.AssemblyId);
-                    if (assembly != null && GetObfuscatedClass(assembly.Name.Name, typeInfoRecord.TypeFullName) is { } obfuscatedClass)
+                    if (assembly != null && Mapping.GetObfuscatedClass(assembly.Name.Name, typeInfoRecord.TypeFullName) is { } obfuscatedClass)
                     {
                         typeInfoRecord.TypeFullName = obfuscatedClass.ObfuscatedFullName;
                     }
@@ -849,7 +849,7 @@ public class Obfuscator
                     using var reader = new BinaryReader(new MemoryStream(propertyCustomRecord.Data));
                     var typeId = reader.ReadUInt16();
                     var type = ctx.ResolveType(typeId);
-                    if (GetObfuscatedClass(type) is not { } obfuscatedClass) continue;
+                    if (Mapping.GetObfuscatedClass(type) is not { } obfuscatedClass) continue;
                     var propertyName = reader.ReadString();
                     if (obfuscatedClass.GetObfuscatedProperty(propertyName) is not { } obfuscatedProperty) continue;
 
@@ -905,9 +905,9 @@ public class Obfuscator
                         bindingCtx.PushTemplateParent(
                             targetTypeNode.Record switch
                             {
-                                TypeInfoRecord typeInfoRecord => GetObfuscatedClass(typeInfoRecord, ctx),
+                                TypeInfoRecord typeInfoRecord => Mapping.GetObfuscatedClass(typeInfoRecord, ctx),
                                 PropertyTypeReferenceRecord propertyTypeReferenceRecord =>
-                                    GetObfuscatedClass(ctx.ResolveType(propertyTypeReferenceRecord.TypeId)),
+                                    Mapping.GetObfuscatedClass(ctx.ResolveType(propertyTypeReferenceRecord.TypeId)),
                                 _ => throw new NotSupportedException()
                             });
                     }
@@ -928,7 +928,7 @@ public class Obfuscator
                 {
                     if (bamlBlockNode.Properties.TryGetValue("DataType", out var dataTypeNode))
                     {
-                        var dataType = GetObfuscatedClass((TypeInfoRecord)dataTypeNode.Record, ctx);
+                        var dataType = Mapping.GetObfuscatedClass((TypeInfoRecord)dataTypeNode.Record, ctx);
                         bindingCtx.PushDataContext(dataType);
                     }
                     else
@@ -971,26 +971,6 @@ public class Obfuscator
         if (dataContextPushed) bindingCtx.PopDataContext();
         if (templateParentPushed) bindingCtx.PopTemplateParent();
     }
-
-    private ObfuscatedClass GetObfuscatedClass(string assemblyName, string typeFullName)
-    {
-        typeFullName = typeFullName.Replace('+', '/');
-        return Mapping.ClassMap.FirstOrDefault(p => p.Key.Scope == assemblyName && p.Key.Fullname == typeFullName).Value is
-            { Status: ObfuscationStatus.Renamed } obfuscatedClass ?
-            obfuscatedClass :
-            null;
-    }
-
-    private ObfuscatedClass GetObfuscatedClass(string assemblyName, string typeNamespace, string typeName) =>
-        GetObfuscatedClass(assemblyName, typeNamespace + "." + typeName);
-
-    private ObfuscatedClass GetObfuscatedClass(TypeReference type) =>
-        type?.Module == null ?
-            null :
-            GetObfuscatedClass(type.Module.Assembly.Name.Name, type.Namespace, type.Name);
-
-    private ObfuscatedClass GetObfuscatedClass(TypeInfoRecord record, BamlContext ctx) =>
-        GetObfuscatedClass(ctx.ResolveAssembly(record.AssemblyId).Name.Name, record.TypeFullName);
 
     private void RenameType(
         AssemblyInfo info,
