@@ -1,20 +1,27 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>$(GlobalTargetFrameworkWindows)</TargetFramework>
     <Nullable>disable</Nullable>
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
     <OutputType>Exe</OutputType>
+    <SignAssembly>false</SignAssembly>
   </PropertyGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\Baml\Baml.csproj" />
-  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Mono.Cecil" Version="0.11.5" />
     <PackageReference Include="System.Runtime.Caching" Version="8.0.0" />
     <PackageReference Include="System.ValueTuple" Version="4.5.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\ThirdParty\ILSpy\ICSharpCode.BamlDecompiler\BAML\BamlDocument.cs" Link="Baml\BamlDocument.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ICSharpCode.BamlDecompiler\BAML\BamlRecords.cs" Link="Baml\BamlRecords.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ICSharpCode.BamlDecompiler\BAML\BamlReader.cs" Link="Baml\BamlReader.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ICSharpCode.BamlDecompiler\BAML\BamlWriter.cs" Link="Baml\BamlWriter.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ICSharpCode.BamlDecompiler\BAML\KnownMembers.cs" Link="Baml\KnownMembers.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ICSharpCode.BamlDecompiler\BAML\KnownThings.g.cs" Link="Baml\KnownThings.g.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ICSharpCode.BamlDecompiler\BAML\KnownTypes.cs" Link="Baml\KnownTypes.cs" />
   </ItemGroup>
 
 </Project>

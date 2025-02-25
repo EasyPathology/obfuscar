@@ -44,6 +44,8 @@ using Mono.Cecil.Cil;
 using Mono.Cecil.Pdb;
 using Mono.Cecil.Rocks;
 using Obfuscar.Helpers;
+using ArrayType = Mono.Cecil.ArrayType;
+using Resource = Mono.Cecil.Resource;
 
 namespace Obfuscar;
 
@@ -545,11 +547,20 @@ public class Obfuscator
         }
     }
 
+    // EasyPathology.Desktop.Recording.Views.Pages.RecordingDevicesSettingsPage: RecordingDevicesSettingsPageViewModel
+    private TypeReference reactiveViewType;
+
     /// <summary>
     ///     Renames types and resources in the project.
     /// </summary>
     private void RenameTypes()
     {
+        if (Project.Settings.AnalyzeXaml &&
+            Project.AssemblyList.FirstOrDefault(a => a.Name == "EasyPathology.Desktop.Core") is { } assemblyInfo)
+        {
+            reactiveViewType = assemblyInfo.Definition.MainModule.GetType("EasyPathology.Desktop.Core.Interfaces.IReactiveView`1");
+        }
+
         foreach (var info in Project.AssemblyList)
         {
             var library = info.Definition;
@@ -558,13 +569,9 @@ public class Obfuscator
             var resources = new List<Resource>(library.MainModule.Resources.Count);
             resources.AddRange(library.MainModule.Resources);
 
-            var xamlFiles = GetXamlDocuments(library, Project.Settings.AnalyzeXaml);
-            var namesInXaml = NamesInXaml(xamlFiles);
-
             // Save the original names of all types because parent (declaring) types of nested types may be already renamed.
             // The names are used for the mappings file.
-            var unrenamedTypeKeys =
-                info.GetAllTypeDefinitions().ToDictionary(type => type, type => new TypeKey(type));
+            var unrenamedTypeKeys = info.GetAllTypeDefinitions().ToDictionary(type => type, type => new TypeKey(type));
 
             // loop through the types
             var typeIndex = 0;
@@ -573,7 +580,7 @@ public class Obfuscator
                 if (type.FullName == "<Module>")
                     continue;
 
-                if (type.FullName.IndexOf("<PrivateImplementationDetails>{", StringComparison.Ordinal) >= 0)
+                if (type.FullName.Contains("<PrivateImplementationDetails>{", StringComparison.Ordinal))
                     continue;
 
                 var oldTypeKey = new TypeKey(type);
@@ -599,33 +606,6 @@ public class Obfuscator
                         {
                             resources.RemoveAt(i);
                             Mapping.AddResource(resName, ObfuscationStatus.Skipped, skip);
-                        }
-                        else
-                        {
-                            i++;
-                        }
-                    }
-
-                    continue;
-                }
-
-                if (namesInXaml.Contains(type.FullName))
-                {
-                    Mapping.UpdateType(oldTypeKey, ObfuscationStatus.Skipped, "filtered by BAML");
-                    foreach (var property in oldTypeKey.TypeDefinition.Properties)
-                    {
-                        Mapping.UpdateProperty(new PropertyKey(oldTypeKey, property), ObfuscationStatus.Skipped, "filtered by BAML");
-                    }
-
-                    // go through the list of resources, remove ones that would be renamed
-                    for (var i = 0; i < resources.Count;)
-                    {
-                        var res = resources[i];
-                        var resName = res.Name;
-                        if (Path.GetFileNameWithoutExtension(resName) == fullName)
-                        {
-                            resources.RemoveAt(i);
-                            Mapping.AddResource(resName, ObfuscationStatus.Skipped, "filtered by BAML");
                         }
                         else
                         {
@@ -669,6 +649,10 @@ public class Obfuscator
 
                 FixResourceManager(resources, type, fullName, newTypeKey);
 
+                if (oldTypeKey.TypeDefinition.Name == "Modes")
+                {
+                    _ = 1;
+                }
                 RenameType(info, type, oldTypeKey, newTypeKey, unrenamedTypeKey);
             }
 
@@ -676,6 +660,8 @@ public class Obfuscator
             {
                 Mapping.AddResource(res.Name, ObfuscationStatus.Skipped, "no clear new name");
             }
+
+            if (Project.Settings.AnalyzeXaml) RenameBamlDocuments(info);
 
             info.InvalidateCache();
         }
@@ -726,80 +712,276 @@ public class Obfuscator
         }
     }
 
-    private HashSet<string> NamesInXaml(List<BamlDocument> xamlFiles)
+    private void RenameBamlDocuments(AssemblyInfo assemblyInfo)
     {
-        var result = new HashSet<string>();
-        if (xamlFiles.Count == 0)
-            return result;
-
-        foreach (var doc in xamlFiles)
+        var resources = assemblyInfo.Definition.MainModule.Resources;
+        for (var i = 0; i < resources.Count; i++)
         {
-            foreach (var child in doc)
-            {
-                var classAttribute = child as TypeInfoRecord;
-                if (classAttribute == null)
-                    continue;
-
-                result.Add(classAttribute.TypeFullName);
-            }
-        }
-
-        return result;
-    }
-
-    private List<BamlDocument> GetXamlDocuments(AssemblyDefinition library, bool analyzeXaml)
-    {
-        var result = new List<BamlDocument>();
-        if (!analyzeXaml)
-        {
-            return result;
-        }
-
-        foreach (var res in library.MainModule.Resources)
-        {
-            if (res is not EmbeddedResource embed)
-                continue;
-
-            var s = embed.GetResourceStream();
-            s.Position = 0;
+            if (resources[i] is not EmbeddedResource embeddedResource) return;
+            var inputStream = embeddedResource.GetResourceStream();
             ResourceReader reader;
             try
             {
-                reader = new ResourceReader(s);
+                reader = new ResourceReader(inputStream);
             }
             catch (ArgumentException)
             {
                 continue;
             }
 
-            foreach (var entry in reader.Cast<DictionaryEntry>().OrderBy(e => e.Key.ToString()))
+            var hasBaml = false;
+            var outputStream = new MemoryStream();
+            var writer = new ResourceWriter(outputStream);
+            foreach (DictionaryEntry entry in reader)
             {
-                if (entry.Key.ToString().EndsWith(".baml", StringComparison.OrdinalIgnoreCase))
+                var key = entry.Key.ToString() ?? string.Empty;
+                if (key.EndsWith(".baml", StringComparison.OrdinalIgnoreCase))
                 {
                     Stream stream;
-                    if (entry.Value is Stream value)
-                        stream = value;
-                    else if (entry.Value is byte[] bytes)
-                        stream = new MemoryStream(bytes);
-                    else
-                        continue;
+                    switch (entry.Value)
+                    {
+                        case Stream value:
+                            stream = value;
+                            break;
+                        case byte[] bytes:
+                            stream = new MemoryStream(bytes);
+                            break;
+                        default:
+                            continue;
+                    }
 
-                    try
+                    hasBaml = true;
+                    var output = RenameBamlDocument(stream);
+                    writer.AddResource(key, output);
+                }
+                else
+                {
+                    writer.AddResource(key, entry.Value);
+                }
+            }
+
+            if (hasBaml)
+            {
+                writer.Generate();
+                outputStream.Position = 0;
+                resources[i] = new EmbeddedResource(embeddedResource.Name, embeddedResource.Attributes, outputStream);
+            }
+        }
+    }
+
+    private MemoryStream RenameBamlDocument(Stream bamlStream)
+    {
+        var document = BamlReader.ReadDocument(bamlStream, CancellationToken.None);
+        var ctx = BamlContext.ConstructContext(Project, document);
+        foreach (var record in document)
+        {
+            switch (record)
+            {
+                case AttributeInfoRecord attributeInfoRecord:
+                {
+                    var ownerType = ctx.ResolveType(attributeInfoRecord.OwnerTypeId);
+                    // if (ownerType is { TypeNamespace: "Antelcat.Wpf.Attachments", TypeName: "Reference" } &&
+                    //     attributeInfoRecord.Name == "DataContext")
+                    // {
+                    //     var valueRecord = (TypeInfoRecord)bamlNode.Parent.Children[bamlNode.Parent.Children.IndexOf(bamlNode) + 1].Record;
+                    //     var dataContext = ctx.ResolveType(valueRecord.TypeId);
+                    //     return;
+                    // }
+
+                    if (GetObfuscatedClass(ownerType) is { } obfuscatedClass &&
+                        obfuscatedClass.GetObfuscatedProperty(attributeInfoRecord.Name) is { } obfuscatedProperty)
                     {
-                        result.Add(BamlReader.ReadDocument(stream, CancellationToken.None));
+                        attributeInfoRecord.Name = obfuscatedProperty.ObfuscatedFullName;
                     }
-                    catch (ArgumentException)
+                    break;
+                }
+                case TypeInfoRecord typeInfoRecord:
+                {
+                    var assembly = ctx.ResolveAssembly(typeInfoRecord.AssemblyId);
+                    if (assembly != null && GetObfuscatedClass(assembly.Name.Name, typeInfoRecord.TypeFullName) is { } obfuscatedClass)
                     {
+                        typeInfoRecord.TypeFullName = obfuscatedClass.ObfuscatedFullName;
                     }
-                    catch (FileNotFoundException)
+                    break;
+                }
+                case PIMappingRecord piMappingRecord:
+                {
+                    if (Mapping.ClassMap.FirstOrDefault(p => p.Key.Namespace.Equals(piMappingRecord.ClrNamespace)).Value is
+                        { Status: ObfuscationStatus.Renamed } obfuscatedClass)
                     {
+                        piMappingRecord.ClrNamespace = obfuscatedClass.ObfuscatedNamespace;
+                        piMappingRecord.XmlNamespace = "clr-namespace:" + obfuscatedClass.ObfuscatedNamespace;
                     }
+                    break;
+                }
+                case XmlnsPropertyRecord xmlnsPropertyRecord when xmlnsPropertyRecord.XmlNamespace.StartsWith("clr-namespace:"):
+                {
+                    var clrNamespace = xmlnsPropertyRecord.XmlNamespace["clr-namespace:".Length..];
+                    if (Mapping.ClassMap.FirstOrDefault(p => p.Key.Namespace.Equals(clrNamespace)).Value is
+                        { Status: ObfuscationStatus.Renamed } obfuscatedClass)
+                    {
+                        xmlnsPropertyRecord.XmlNamespace = "clr-namespace:" + obfuscatedClass.ObfuscatedNamespace;
+                    }
+                    break;
+                }
+                case PropertyCustomRecord propertyCustomRecord:
+                {
+                    // e.g.
+                    // <Setter
+                    //    Property="ct:Avatar.DefaultImageSource"
+                    //    Value="../../Resources/Images/Avatar.png" />
+                    // property = Setter
+                    // type = Avatar
+                    // name = DefaultImageSource
+
+                    var serializerType = (KnownTypes)((short)propertyCustomRecord.SerializerTypeId & 0xfff);
+                    if (serializerType != KnownTypes.DependencyPropertyConverter) continue;
+                    // var property = ctx.ResolveProperty(propertyCustomRecord.AttributeId);
+
+                    using var reader = new BinaryReader(new MemoryStream(propertyCustomRecord.Data));
+                    var typeId = reader.ReadUInt16();
+                    var type = ctx.ResolveType(typeId);
+                    if (GetObfuscatedClass(type) is not { } obfuscatedClass) continue;
+                    var propertyName = reader.ReadString();
+                    if (obfuscatedClass.GetObfuscatedProperty(propertyName) is not { } obfuscatedProperty) continue;
+
+                    using var ms = new MemoryStream();
+                    using var writer = new BinaryWriter(ms);
+                    writer.Write(typeId);
+                    writer.Write(obfuscatedProperty.ObfuscatedFullName);
+                    propertyCustomRecord.Data = ms.ToArray();
+                    break;
                 }
             }
         }
 
-        return result;
+        var bamlRootNode = BamlNode.Parse(ctx, document);
+        RenameBamlNode(ctx, bamlRootNode, new BindingContext());
+
+        var output = new MemoryStream();
+        BamlWriter.WriteDocument(document, output);
+        output.Position = 0;
+        return output;
     }
+
+    private class BindingContext
+    {
+        public ObfuscatedClass DataContext => dataContextStack.Count == 0 ? null : dataContextStack.Peek();
+
+        public ObfuscatedClass TemplateParent => templateParentStack.Count == 0 ? null : templateParentStack.Peek();
+
+        private readonly Stack<ObfuscatedClass> dataContextStack = new();
+        private readonly Stack<ObfuscatedClass> templateParentStack = new();
+
+        public void PushDataContext(ObfuscatedClass dataContext) => dataContextStack.Push(dataContext);
+        public void PopDataContext() => dataContextStack.Pop();
+
+        public void PushTemplateParent(ObfuscatedClass templateParent) => templateParentStack.Push(templateParent);
+        public void PopTemplateParent() => templateParentStack.Pop();
+    }
+
+    private void RenameBamlNode(BamlContext ctx, BamlBlockNode bamlBlockNode, BindingContext bindingCtx)
+    {
+        var dataContextPushed = false;
+        var templateParentPushed = false;
+
+        if (bamlBlockNode.Type == BamlRecordType.ElementStart)
+        {
+            var elementType = ((TypeReference)bamlBlockNode.BamlType).Resolve();
+            switch (elementType.FullName)
+            {
+                case "System.Windows.Controls.ControlTemplate":
+                {
+                    if (bamlBlockNode.Properties.TryGetValue("TargetType", out var targetTypeNode))
+                    {
+                        bindingCtx.PushTemplateParent(targetTypeNode.Record switch
+                        {
+                            TypeInfoRecord typeInfoRecord => GetObfuscatedClass(typeInfoRecord, ctx),
+                            PropertyTypeReferenceRecord propertyTypeReferenceRecord =>
+                                GetObfuscatedClass(ctx.ResolveType(propertyTypeReferenceRecord.TypeId)),
+                            _ => throw new NotSupportedException()
+                        });
+                    }
+                    else
+                    {
+                        bindingCtx.PushTemplateParent(bindingCtx.DataContext);
+                    }
+                    templateParentPushed = true;
+                    break;
+                }
+                case "System.Windows.Controls.ItemsPanelTemplate":
+                {
+                    bindingCtx.PushTemplateParent(null);
+                    templateParentPushed = true;
+                    break;
+                }
+                case "System.Windows.Controls.DataTemplate":
+                {
+                    if (bamlBlockNode.Properties.TryGetValue("DataType", out var dataTypeNode))
+                    {
+                        var dataType = GetObfuscatedClass((TypeInfoRecord)dataTypeNode.Record, ctx);
+                        bindingCtx.PushDataContext(dataType);
+                    }
+                    else
+                    {
+                        bindingCtx.PushTemplateParent(bindingCtx.DataContext);
+                    }
+                    templateParentPushed = true;
+                    break;
+                }
+                case "System.Windows.Data.Binding":
+                {
+                    // var path = bamlBlockNode.ConstructorParameter != null ?
+                    //     ((TextRecord)bamlBlockNode.ConstructorParameter.Record).Value :
+                    //     bamlBlockNode.Properties.TryGetValue("Path", out var pathNode) ?
+                    //         ((TextRecord)pathNode.ConstructorParameter.Record).Value :
+                    //         ".";
+                    if (bamlBlockNode.Properties.ContainsKey("RelativeSource"))
+                    {
+                        _ = 1;
+                    }
+                    break;
+                }
+                default:
+                {
+                    if (elementType.HasInterfaces &&
+                        elementType.Interfaces.FirstOrDefault(i => i.InterfaceType.Name == reactiveViewType.Name) is { } reactiveView)
+                    {
+                        var viewModelType = ((GenericInstanceType)reactiveView.InterfaceType).GenericArguments[0];
+                        var dataContext = Mapping.ClassMap.Values.FirstOrDefault(o => o.ObfuscatedFullName == viewModelType.FullName);
+                        bindingCtx.PushDataContext(dataContext);
+                        dataContextPushed = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        foreach (var child in bamlBlockNode.Children) RenameBamlNode(ctx, child, bindingCtx);
+
+        if (dataContextPushed) bindingCtx.PopDataContext();
+        if (templateParentPushed) bindingCtx.PopTemplateParent();
+    }
+
+    private ObfuscatedClass GetObfuscatedClass(string assemblyName, string typeFullName)
+    {
+        typeFullName = typeFullName.Replace('+', '/');
+        return Mapping.ClassMap.FirstOrDefault(p => p.Key.Scope == assemblyName && p.Key.Fullname == typeFullName).Value is
+            { Status: ObfuscationStatus.Renamed } obfuscatedClass ?
+            obfuscatedClass :
+            null;
+    }
+
+    private ObfuscatedClass GetObfuscatedClass(string assemblyName, string typeNamespace, string typeName) =>
+        GetObfuscatedClass(assemblyName, typeNamespace + "." + typeName);
+
+    private ObfuscatedClass GetObfuscatedClass(TypeReference type) =>
+        type?.Module == null ?
+            null :
+            GetObfuscatedClass(type.Module.Assembly.Name.Name, type.Namespace, type.Name);
+
+    private ObfuscatedClass GetObfuscatedClass(TypeInfoRecord record, BamlContext ctx) =>
+        GetObfuscatedClass(ctx.ResolveAssembly(record.AssemblyId).Name.Name, record.TypeFullName);
 
     private void RenameType(
         AssemblyInfo info,
@@ -832,12 +1014,19 @@ public class Obfuscator
             }
         }
 
-        type.Namespace = newTypeKey.Namespace;
-        type.Name = newTypeKey.Name;
+        var @namespace = type.Namespace = newTypeKey.Namespace;
+        var name = type.Name = newTypeKey.Name;
+        while (type.DeclaringType != null)
+        {
+            type = type.DeclaringType;
+            @namespace = type.Namespace;
+            name = $"{type.Name}/{name}";
+        }
+
         Mapping.UpdateType(
             unrenamedTypeKey,
             ObfuscationStatus.Renamed,
-            $"[{newTypeKey.Scope}]{type}");
+            $"[{newTypeKey.Scope}]{@namespace}::{name}");
     }
 
     private static Dictionary<ParamSig, NameGroup> GetSigNames(
@@ -884,17 +1073,7 @@ public class Obfuscator
                 }
 
                 var typeKey = new TypeKey(type);
-
-                var propsToDrop = new List<PropertyDefinition>();
-                _ = type.Properties.Aggregate(0, (current, prop) => ProcessProperty(typeKey, prop, info, type, current, propsToDrop));
-
-                foreach (var prop in propsToDrop)
-                {
-                    var propKey = new PropertyKey(typeKey, prop);
-                    var m = Mapping.GetProperty(propKey);
-                    m.Update(ObfuscationStatus.Renamed, "dropped");
-                    type.Properties.Remove(prop);
-                }
+                _ = type.Properties.Aggregate(0, (current, prop) => ProcessProperty(typeKey, prop, info, type, current));
             }
         }
     }
@@ -904,8 +1083,7 @@ public class Obfuscator
         PropertyDefinition prop,
         AssemblyInfo info,
         TypeDefinition type,
-        int index,
-        List<PropertyDefinition> propsToDrop)
+        int index)
     {
         var propKey = new PropertyKey(typeKey, prop);
         var m = Mapping.GetProperty(propKey);
@@ -944,16 +1122,11 @@ public class Obfuscator
             m.Update(ObfuscationStatus.Skipped, "public setter of a custom attribute");
             // no problem when the getter or setter methods are renamed by RenameMethods()
         }
-        else if (prop.CustomAttributes.Count > 0)
+        else
         {
             // If a property has custom attributes we don't remove the property but rename it instead.
             var newName = NameMaker.UniqueName(Project.Settings.ReuseNames ? index++ : _uniqueMemberNameIndex++);
             RenameProperty(info, propKey, prop, newName);
-        }
-        else
-        {
-            // add to collection for removal
-            propsToDrop.Add(prop);
         }
         return index;
     }
@@ -1913,6 +2086,35 @@ public class Obfuscator
         {
             if (!StrongNameSignatureGeneration(assemblyName, keyName, null, 0, IntPtr.Zero, out _))
                 throw new ObfuscarException("Unable to sign assembly using key from key container - " + keyName);
+        }
+    }
+}
+
+internal static class Extensions
+{
+    public static bool IsAssignableTo(this TypeReference type, TypeReference baseType)
+    {
+        while (type != null && baseType != null)
+        {
+            if (type == baseType) return true;
+            if (type.IsGenericInstance || baseType.IsGenericInstance) return false;
+            type = type.Resolve()?.BaseType;
+        }
+
+        return false;
+    }
+
+    public static IEnumerable<PropertyDefinition> GetAllProperties(this TypeReference typeReference)
+    {
+        var type = typeReference?.Resolve();
+        while (type != null)
+        {
+            foreach (var property in type.Properties)
+            {
+                yield return property;
+            }
+
+            type = type.BaseType?.Resolve();
         }
     }
 }

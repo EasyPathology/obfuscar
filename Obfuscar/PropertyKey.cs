@@ -27,85 +27,70 @@
 using System;
 using Mono.Cecil;
 
-namespace Obfuscar
+namespace Obfuscar;
+
+internal class PropertyKey(TypeKey typeKey, PropertyDefinition prop)
 {
-    class PropertyKey
+
+    public TypeKey TypeKey { get; } = typeKey;
+
+    public string Type { get; } = prop.PropertyType.FullName;
+
+    public string Name { get; } = prop.Name;
+
+    public MethodAttributes GetterMethodAttributes => Property.GetMethod?.Attributes ?? 0;
+
+    public TypeDefinition DeclaringType => Property.DeclaringType;
+
+    public PropertyDefinition Property { get; } = prop;
+
+    public virtual bool Matches(MemberReference member)
     {
-        public PropertyKey(TypeKey typeKey, PropertyDefinition prop)
+        if (member is PropertyReference propRef)
         {
-            this.TypeKey = typeKey;
-            this.Type = prop.PropertyType.FullName;
-            this.Name = prop.Name;
-            this.Property = prop;
+            if (TypeKey.Matches(propRef.DeclaringType))
+                return Type == propRef.PropertyType.FullName && Name == propRef.Name;
         }
 
-        public TypeKey TypeKey { get; }
+        return false;
+    }
 
-        public string Type { get; }
-
-        public string Name { get; }
-
-        public MethodAttributes GetterMethodAttributes
-        {
-            get { return Property.GetMethod != null ? Property.GetMethod.Attributes : 0; }
-        }
-
-        public TypeDefinition DeclaringType
-        {
-            get { return (TypeDefinition) Property.DeclaringType; }
-        }
-
-        public PropertyDefinition Property { get; }
-
-        public virtual bool Matches(MemberReference member)
-        {
-            PropertyReference propRef = member as PropertyReference;
-            if (propRef != null)
-            {
-                if (TypeKey.Matches(propRef.DeclaringType))
-                    return Type == propRef.PropertyType.FullName && Name == propRef.Name;
-            }
-
+    public override bool Equals(object obj)
+    {
+        PropertyKey key = obj as PropertyKey;
+        if (key == null)
             return false;
-        }
 
-        public override bool Equals(object obj)
-        {
-            PropertyKey key = obj as PropertyKey;
-            if (key == null)
-                return false;
+        return this == key;
+    }
 
-            return this == key;
-        }
+    public static bool operator ==(PropertyKey a, PropertyKey b)
+    {
+        if ((object) a == null)
+            return (object) b == null;
+        else if ((object) b == null)
+            return false;
+        else
+            return a.TypeKey == b.TypeKey && a.Type == b.Type && a.Name == b.Name;
+    }
 
-        public static bool operator ==(PropertyKey a, PropertyKey b)
-        {
-            if ((object) a == null)
-                return (object) b == null;
-            else if ((object) b == null)
-                return false;
-            else
-                return a.TypeKey == b.TypeKey && a.Type == b.Type && a.Name == b.Name;
-        }
+    public static bool operator !=(PropertyKey a, PropertyKey b)
+    {
+        if ((object) a == null)
+            return (object) b != null;
+        else if ((object) b == null)
+            return true;
+        else
+            return a.TypeKey != b.TypeKey || a.Type != b.Type || a.Name != b.Name;
+    }
 
-        public static bool operator !=(PropertyKey a, PropertyKey b)
-        {
-            if ((object) a == null)
-                return (object) b != null;
-            else if ((object) b == null)
-                return true;
-            else
-                return a.TypeKey != b.TypeKey || a.Type != b.Type || a.Name != b.Name;
-        }
+    public override int GetHashCode()
+    {
+        return TypeKey.GetHashCode() ^ Type.GetHashCode() ^ Name.GetHashCode();
+    }
 
-        public override int GetHashCode()
-        {
-            return TypeKey.GetHashCode() ^ Type.GetHashCode() ^ Name.GetHashCode();
-        }
-
-        public override string ToString()
-        {
-            return string.Format("[{0}]{1} {2}::{3}", TypeKey.Scope, Type, TypeKey.Fullname, Name);
-        }
+    public override string ToString()
+    {
+        return string.Format("[{0}]{1} {2}::{3}", TypeKey.Scope, Type, TypeKey.Fullname, Name);
     }
 }
